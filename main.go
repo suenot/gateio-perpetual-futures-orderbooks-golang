@@ -34,13 +34,19 @@ type WebSocketMessage struct {
 	Time    int64           `json:"time"`
 	Channel string          `json:"channel"`
 	Event   string          `json:"event"`
-	Result  OrderBookUpdate `json:"result"`
+	Result  json.RawMessage `json:"result"` // Changed to RawMessage for flexible parsing
 }
 
+// Структура для обновления ордербука
 type OrderBookUpdate struct {
-	Contract string          `json:"contract"`
-	Asks     []OrderBookItem `json:"asks"`
-	Bids     []OrderBookItem `json:"bids"`
+	Contract string          `json:"s"` // Contract name in update messages
+	Asks     []OrderBookItem `json:"a"` // Ask orders
+	Bids     []OrderBookItem `json:"b"` // Bid orders
+}
+
+// Структура для подтверждения подписки
+type SubscriptionResponse struct {
+	Status string `json:"status"`
 }
 
 // Глобальные переменные для хранения ордербуков
@@ -84,7 +90,7 @@ func formatOrderBook(orderbook OrderBookResponse) string {
 	for i := len(orderbook.Asks) - 1; i >= 0; i-- {
 		ask := orderbook.Asks[i]
 		price, _ := strconv.ParseFloat(ask.P, 64)
-		size := ask.S // / 100000000.0 // Convert from Gate.io's internal representation
+		size := ask.S
 		sb.WriteString(fmt.Sprintf("ASK %.8f | %.8f\n", price, size))
 	}
 
@@ -94,7 +100,7 @@ func formatOrderBook(orderbook OrderBookResponse) string {
 	// Форматируем bids
 	for _, bid := range orderbook.Bids {
 		price, _ := strconv.ParseFloat(bid.P, 64)
-		size := bid.S // / 100000000.0 // Convert from Gate.io's internal representation
+		size := bid.S
 		sb.WriteString(fmt.Sprintf("BID %.8f | %.8f\n", price, size))
 	}
 
@@ -103,6 +109,11 @@ func formatOrderBook(orderbook OrderBookResponse) string {
 
 // Сохранение ордербука в файл
 func saveOrderBook(symbol string, orderbook OrderBookResponse) error {
+	// Проверяем, что символ не пустой
+	if symbol == "" {
+		return fmt.Errorf("empty symbol provided")
+	}
+
 	// Создаем директорию если её нет
 	orderbookDir := "./orderbooks"
 	err := os.MkdirAll(orderbookDir, 0755)
@@ -125,9 +136,6 @@ func saveOrderBook(symbol string, orderbook OrderBookResponse) error {
 
 // Обработка WebSocket сообщений
 func handleWebSocketMessage(msg []byte) {
-	// Выводим сырое сообщение в консоль
-	fmt.Printf("Raw WebSocket message: %s\n", string(msg))
-
 	var wsMsg WebSocketMessage
 	err := json.Unmarshal(msg, &wsMsg)
 	if err != nil {
@@ -137,18 +145,59 @@ func handleWebSocketMessage(msg []byte) {
 
 	// Проверяем, что это сообщение с обновлением ордербука
 	if wsMsg.Channel == "futures.order_book_update" {
-		// Обновляем существующий ордербук
-		if existing, ok := orderbooks[wsMsg.Result.Contract]; ok {
-			// Обновляем asks и bids
-			existing.Asks = wsMsg.Result.Asks
-			existing.Bids = wsMsg.Result.Bids
-			existing.Update = float64(wsMsg.Time) / 1000
-			orderbooks[wsMsg.Result.Contract] = existing
-
-			// Сохраняем обновленный ордербук
-			err = saveOrderBook(wsMsg.Result.Contract, existing)
+		if wsMsg.Event == "subscribe" {
+			// Обрабатываем подтверждение подписки
+			var subResp SubscriptionResponse
+			err = json.Unmarshal(wsMsg.Result, &subResp)
 			if err != nil {
-				log.Printf("Failed to save updated orderbook for %s: %v", wsMsg.Result.Contract, err)
+				log.Printf("Subscription response parse error: %v", err)
+			} else {
+				log.Printf("Subscription status: %s", subResp.Status)
+			}
+			return
+		}
+
+		if wsMsg.Event == "update" {
+			// Обрабатываем обновление ордербука
+			var update OrderBookUpdate
+			err = json.Unmarshal(wsMsg.Result, &update)
+			if err != nil {
+				log.Printf("Update message parse error: %v", err)
+				return
+			}
+
+			contract := update.Contract
+			if contract == "" {
+				log.Printf("Warning: Empty contract in update message: %s", string(msg))
+				return
+			}
+
+			// Получаем существующий ордербук или создаем новый
+			existing, ok := orderbooks[contract]
+			if !ok {
+				// Если ордербука нет, создаем новый
+				existing = OrderBookResponse{
+					Current: float64(wsMsg.Time) / 1000,
+					Update:  float64(wsMsg.Time) / 1000,
+				}
+				log.Printf("Created new orderbook for contract: %s", contract)
+			}
+
+			// Обновляем asks и bids
+			if len(update.Asks) > 0 || len(update.Bids) > 0 {
+				existing.Asks = update.Asks
+				existing.Bids = update.Bids
+				existing.Update = float64(wsMsg.Time) / 1000
+				orderbooks[contract] = existing
+
+				// Сохраняем обновленный ордербук
+				err = saveOrderBook(contract, existing)
+				if err != nil {
+					log.Printf("Failed to save updated orderbook for %s: %v", contract, err)
+				} else {
+					log.Printf("Updated orderbook for contract: %s (asks: %d, bids: %d)",
+						contract, len(update.Asks), len(update.Bids))
+				}
 			}
 		}
 	}
@@ -223,23 +272,22 @@ func main() {
 	// Список контрактов для отслеживания
 	contracts := []string{"BTC_USDT", "ETH_USDT", "LTC_USDT"}
 
+	// Временно комментируем для отладки
 	// Получаем начальные снимки ордербуков
-	for _, contract := range contracts {
-		orderbook, err := getOrderBookSnapshot("usdt", contract, 50)
-		if err != nil {
-			log.Printf("Failed to get initial orderbook for %s: %v", contract, err)
-			continue
-		}
-
-		orderbooks[contract] = orderbook
-		log.Printf("Initial orderbook snapshot received for %s", contract)
-
-		// Сохраняем начальный снимок
-		err = saveOrderBook(contract, orderbook)
-		if err != nil {
-			log.Printf("Failed to save initial orderbook for %s: %v", contract, err)
-		}
-	}
+	// for _, contract := range contracts {
+	// 	orderbook, err := getOrderBookSnapshot("usdt", contract, 50)
+	// 	if err != nil {
+	// 		log.Printf("Failed to get initial orderbook for %s: %v", contract, err)
+	// 		continue
+	// 	}
+	// 	orderbooks[contract] = orderbook
+	// 	log.Printf("Initial orderbook snapshot received for %s", contract)
+	// 	// Сохраняем начальный снимок
+	// 	err = saveOrderBook(contract, orderbook)
+	// 	if err != nil {
+	// 		log.Printf("Failed to save initial orderbook for %s: %v", contract, err)
+	// 	}
+	// }
 
 	// Запускаем периодическое сохранение
 	go startOrderBookSaver()
