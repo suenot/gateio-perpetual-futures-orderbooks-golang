@@ -125,6 +125,9 @@ func saveOrderBook(symbol string, orderbook OrderBookResponse) error {
 
 // Обработка WebSocket сообщений
 func handleWebSocketMessage(msg []byte) {
+	// Выводим сырое сообщение в консоль
+	fmt.Printf("Raw WebSocket message: %s\n", string(msg))
+
 	var wsMsg WebSocketMessage
 	err := json.Unmarshal(msg, &wsMsg)
 	if err != nil {
@@ -161,19 +164,24 @@ func connectWebSocket(contracts []string) {
 	}
 	defer c.Close()
 
-	// Подписываемся на обновления ордербука
-	subscribeMsg := map[string]interface{}{
-		"channel": "futures.order_book_update",
-		"event":   "subscribe",
-		"payload": contracts,
+	// Подписываемся на обновления ордербука для каждого контракта отдельно
+	for _, contract := range contracts {
+		subscribeMsg := map[string]interface{}{
+			"time":    time.Now().Unix(),
+			"channel": "futures.order_book_update",
+			"event":   "subscribe",
+			"payload": []string{contract, "100ms"}, // Добавляем интервал обновления как второй аргумент
+		}
+
+		err = c.WriteJSON(subscribeMsg)
+		if err != nil {
+			log.Printf("WebSocket subscription error for %s: %v", contract, err)
+			continue
+		}
+		log.Printf("Subscribed to %s orderbook updates", contract)
 	}
 
-	err = c.WriteJSON(subscribeMsg)
-	if err != nil {
-		log.Fatal("WebSocket subscription error:", err)
-	}
-
-	log.Println("WebSocket connected and subscribed")
+	log.Println("WebSocket connected and subscribed to all contracts")
 
 	// Обработка входящих сообщений
 	for {
@@ -234,7 +242,7 @@ func main() {
 	}
 
 	// Запускаем периодическое сохранение
-	startOrderBookSaver()
+	go startOrderBookSaver()
 
 	// Подключаемся к WebSocket
 	connectWebSocket(contracts)
