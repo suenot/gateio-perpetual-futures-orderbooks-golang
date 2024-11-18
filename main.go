@@ -134,6 +134,34 @@ func saveOrderBook(symbol string, orderbook OrderBookResponse) error {
 	return nil
 }
 
+// Обновление списка ордеров
+func updateOrders(existing []OrderBookItem, updates []OrderBookItem) []OrderBookItem {
+	// Создаем карту существующих ордеров для быстрого доступа
+	ordersMap := make(map[string]float64)
+	for _, order := range existing {
+		ordersMap[order.P] = order.S
+	}
+
+	// Обновляем или удаляем ордера
+	for _, update := range updates {
+		if update.S == 0 {
+			// Если размер 0, удаляем ордер
+			delete(ordersMap, update.P)
+		} else {
+			// Иначе обновляем или добавляем
+			ordersMap[update.P] = update.S
+		}
+	}
+
+	// Преобразуем обратно в слайс
+	var result []OrderBookItem
+	for price, size := range ordersMap {
+		result = append(result, OrderBookItem{P: price, S: size})
+	}
+
+	return result
+}
+
 // Обработка WebSocket сообщений
 func handleWebSocketMessage(msg []byte) {
 	var wsMsg WebSocketMessage
@@ -172,32 +200,23 @@ func handleWebSocketMessage(msg []byte) {
 				return
 			}
 
-			// Получаем существующий ордербук или создаем новый
+			// Получаем существующий ордербук
 			existing, ok := orderbooks[contract]
 			if !ok {
-				// Если ордербука нет, создаем новый
-				existing = OrderBookResponse{
-					Current: float64(wsMsg.Time) / 1000,
-					Update:  float64(wsMsg.Time) / 1000,
-				}
-				log.Printf("Created new orderbook for contract: %s", contract)
+				log.Printf("Warning: No existing orderbook for contract %s", contract)
+				return
 			}
 
 			// Обновляем asks и bids
 			if len(update.Asks) > 0 || len(update.Bids) > 0 {
-				existing.Asks = update.Asks
-				existing.Bids = update.Bids
+				// Обновляем существующие ордера
+				existing.Asks = updateOrders(existing.Asks, update.Asks)
+				existing.Bids = updateOrders(existing.Bids, update.Bids)
 				existing.Update = float64(wsMsg.Time) / 1000
 				orderbooks[contract] = existing
 
-				// Сохраняем обновленный ордербук
-				err = saveOrderBook(contract, existing)
-				if err != nil {
-					log.Printf("Failed to save updated orderbook for %s: %v", contract, err)
-				} else {
-					log.Printf("Updated orderbook for contract: %s (asks: %d, bids: %d)",
-						contract, len(update.Asks), len(update.Bids))
-				}
+				log.Printf("Updated orderbook for contract: %s (asks updates: %d, bids updates: %d)",
+					contract, len(update.Asks), len(update.Bids))
 			}
 		}
 	}
@@ -245,7 +264,7 @@ func connectWebSocket(contracts []string) {
 
 // Запуск периодического сохранения ордербуков
 func startOrderBookSaver() {
-	ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(50 * time.Millisecond)
 	go func() {
 		for range ticker.C {
 			for symbol, orderbook := range orderbooks {
@@ -272,22 +291,21 @@ func main() {
 	// Список контрактов для отслеживания
 	contracts := []string{"BTC_USDT", "ETH_USDT", "LTC_USDT"}
 
-	// Временно комментируем для отладки
 	// Получаем начальные снимки ордербуков
-	// for _, contract := range contracts {
-	// 	orderbook, err := getOrderBookSnapshot("usdt", contract, 50)
-	// 	if err != nil {
-	// 		log.Printf("Failed to get initial orderbook for %s: %v", contract, err)
-	// 		continue
-	// 	}
-	// 	orderbooks[contract] = orderbook
-	// 	log.Printf("Initial orderbook snapshot received for %s", contract)
-	// 	// Сохраняем начальный снимок
-	// 	err = saveOrderBook(contract, orderbook)
-	// 	if err != nil {
-	// 		log.Printf("Failed to save initial orderbook for %s: %v", contract, err)
-	// 	}
-	// }
+	for _, contract := range contracts {
+		orderbook, err := getOrderBookSnapshot("usdt", contract, 50)
+		if err != nil {
+			log.Printf("Failed to get initial orderbook for %s: %v", contract, err)
+			continue
+		}
+		orderbooks[contract] = orderbook
+		log.Printf("Initial orderbook snapshot received for %s", contract)
+		// Сохраняем начальный снимок
+		err = saveOrderBook(contract, orderbook)
+		if err != nil {
+			log.Printf("Failed to save initial orderbook for %s: %v", contract, err)
+		}
+	}
 
 	// Запускаем периодическое сохранение
 	go startOrderBookSaver()
