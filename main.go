@@ -84,8 +84,8 @@ func formatOrderBook(orderbook OrderBookResponse) string {
 	for i := len(orderbook.Asks) - 1; i >= 0; i-- {
 		ask := orderbook.Asks[i]
 		price, _ := strconv.ParseFloat(ask.P, 64)
-		size := ask.S / 100000000.0 // Convert from Gate.io's internal representation
-		sb.WriteString(fmt.Sprintf("ASK %9.2f | %9.4f\n", price, size))
+		size := ask.S // / 100000000.0 // Convert from Gate.io's internal representation
+		sb.WriteString(fmt.Sprintf("ASK %.8f | %.8f\n", price, size))
 	}
 
 	// Разделительная линия
@@ -94,8 +94,8 @@ func formatOrderBook(orderbook OrderBookResponse) string {
 	// Форматируем bids
 	for _, bid := range orderbook.Bids {
 		price, _ := strconv.ParseFloat(bid.P, 64)
-		size := bid.S / 100000000.0 // Convert from Gate.io's internal representation
-		sb.WriteString(fmt.Sprintf("BID %9.2f | %9.4f\n", price, size))
+		size := bid.S // / 100000000.0 // Convert from Gate.io's internal representation
+		sb.WriteString(fmt.Sprintf("BID %.8f | %.8f\n", price, size))
 	}
 
 	return sb.String()
